@@ -18,6 +18,7 @@ static NSString *const HistoryShimName = @"ReactNativeHistoryShim";
 static NSString *const MessageHandlerName = @"ReactNativeWebView";
 static NSURLCredential* clientAuthenticationCredential;
 static NSDictionary* customCertificatesForHost;
+static BOOL isServerTrustEvaluationDisabled = NO;
 
 // runtime trick to remove WKWebView keyboard default toolbar
 // see: http://stackoverflow.com/questions/19033292/ios-7-uiwebview-keyboard-issue/19042279#19042279
@@ -730,6 +731,54 @@ static NSDictionary* customCertificatesForHost;
     customCertificatesForHost = certificates;
 }
 
++ (void)disableServerTrustEvaluation
+{
+    isServerTrustEvaluationDisabled = YES;
+}
+
+- (void)webView:(WKWebView *)webView
+didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
+completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nulable))completionHandler
+{
+    NSURLProtectionSpace *protectionSpace = challenge.protectionSpace;
+    NSString *authenticationMethod = protectionSpace.authenticationMethod;
+    
+    if (authenticationMethod == NSURLAuthenticationMethodClientCertificate) {
+        completionHandler(NSURLSessionAuthChallengeUseCredential, clientAuthenticationCredential);
+        return;
+    }
+    
+    SecTrustRef trust = protectionSpace.serverTrust;
+    if (authenticationMethod == NSURLAuthenticationMethodServerTrust && trust != nil) {
+        if (isServerTrustEvaluationDisabled) {
+            NSURLCredential *useCredential = [NSURLCredential credentialForTrust:trust];
+            completionHandler(NSURLSessionAuthChallengeUseCredential, useCredential);
+            return;
+        }
+        
+        NSString *host = webView.URL.host;
+        if(host != nil && customCertificatesForHost != nil) {
+            SecCertificateRef localCertificate = (__bridge SecCertificateRef)([customCertificatesForHost objectForKey:host]);
+            if (localCertificate != nil) {
+                NSData *localCertificateData = (NSData*) CFBridgingRelease(SecCertificateCopyData(localCertificate));
+                CFIndex count = SecTrustGetCertificateCount(trust);
+                for (CFIndex i = 0; i < count; i++) {
+                    SecCertificateRef serverCertificate = SecTrustGetCertificateAtIndex(trust, i);
+                    if (serverCertificate == nil) { continue; }
+                    NSData *serverCertificateData = (NSData *) CFBridgingRelease(SecCertificateCopyData(serverCertificate));
+                    if ([serverCertificateData isEqualToData:localCertificateData]) {
+                        NSURLCredential *useCredential = [NSURLCredential credentialForTrust:trust];
+                        completionHandler(NSURLSessionAuthChallengeUseCredential, useCredential);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+}
+
+/*
 - (void)                    webView:(WKWebView *)webView
   didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
                   completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential * _Nullable))completionHandler
@@ -765,6 +814,7 @@ static NSDictionary* customCertificatesForHost;
     }
     completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
 }
+*/
 
 #pragma mark - WKNavigationDelegate methods
 
